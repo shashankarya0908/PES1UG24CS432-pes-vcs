@@ -137,10 +137,40 @@ tree_init(&tree);
 for (size_t i = 0; i < index.count; i++) {
     IndexEntry *e = &index.entries[i];
 
-    // Ignore nested paths for now
-    if (strchr(e->path, '/')) continue;
+    char *slash = strchr(e->path, '/');
 
-    tree_add_entry(&tree, e->mode, e->hash, e->path);
+    if (!slash) {
+        // Root file
+        tree_add_entry(&tree, e->mode, e->hash, e->path);
+    } else {
+        // Nested path → extract directory name
+        size_t dir_len = slash - e->path;
+
+        char dir[256];
+        strncpy(dir, e->path, dir_len);
+        dir[dir_len] = '\0';
+
+        // Extract filename
+        const char *filename = slash + 1;
+
+        // Create subtree
+        Tree subtree;
+        tree_init(&subtree);
+
+        tree_add_entry(&subtree, e->mode, e->hash, filename);
+
+        // Write subtree
+        ObjectID sub_id;
+        if (tree_write(&subtree, &sub_id) != 0) {
+            tree_free(&subtree);
+            continue;
+        }
+
+        tree_free(&subtree);
+
+        // Add subtree to main tree
+        tree_add_entry(&tree, 040000, sub_id, dir);
+    }
 }
 ObjectID tree_id;
 if (tree_write(&tree, &tree_id) != 0) {
