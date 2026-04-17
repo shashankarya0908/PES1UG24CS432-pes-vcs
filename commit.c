@@ -210,18 +210,33 @@ int commit_create(const char *message, ObjectID *commit_id) {
         fclose(head_read);
     }
 
-    char buffer[2048];
+   time_t now = time(NULL);
 
-    if (has_parent) {
-        snprintf(buffer, sizeof(buffer),
-                 "tree %s\nparent %s\n\n%s\n",
-                 tree_hex, parent_hex, message);
-    } else {
-        snprintf(buffer, sizeof(buffer),
-                 "tree %s\n\n%s\n",
-                 tree_hex, message);
-    }
+char buffer[2048];
 
+if (has_parent) {
+    snprintf(buffer, sizeof(buffer),
+             "tree %s\n"
+             "parent %s\n"
+             "author Sujay %ld\n"
+             "committer Sujay %ld\n\n"
+             "%s\n",
+             tree_hex,
+             parent_hex,
+             now,
+             now,
+             message);
+} else {
+    snprintf(buffer, sizeof(buffer),
+             "tree %s\n"
+             "author Sujay %ld\n"
+             "committer Sujay %ld\n\n"
+             "%s\n",
+             tree_hex,
+             now,
+             now,
+             message);
+}
     if (object_write(OBJ_COMMIT, buffer, strlen(buffer), commit_id) != 0)
         return -1;
 
