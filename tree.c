@@ -1,5 +1,5 @@
 // tree.c — Tree object serialization and construction
-// Phase 2: Understanding tree construction from index
+//
 // PROVIDED functions: get_file_mode, tree_parse, tree_serialize
 // TODO functions:     tree_from_index
 //
@@ -15,14 +15,15 @@
 #include <string.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include "index.h"
 
-// ─── Mode Constants ─────────────────────────────────────────────────────────
+// ─── Mode Constants ────────────
 
 #define MODE_FILE      0100644
 #define MODE_EXEC      0100755
 #define MODE_DIR       0040000
 
-// ─── PROVIDED ───────────────────────────────────────────────────────────────
+// ─── PROVIDED ────────────────────
 
 // Determine the object mode for a filesystem path.
 uint32_t get_file_mode(const char *path) {
@@ -113,7 +114,77 @@ int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
     *len_out = offset;
     return 0;
 }
+int build_tree(IndexEntry *entries, int count, const char *prefix, ObjectID *out_id) {
+    Tree tree;
+    tree.count = 0;
 
+    for (int i = 0; i < count; i++) {
+        const char *path = entries[i].path;
+
+        // skip if not in current directory level
+        if (prefix && strncmp(path, prefix, strlen(prefix)) != 0)
+            continue;
+
+        const char *rel = prefix ? path + strlen(prefix) : path;
+
+        const char *slash = strchr(rel, '/');
+
+        if (!slash) {
+            // file
+            TreeEntry *e = &tree.entries[tree.count++];
+
+            e->mode = entries[i].mode;
+            strcpy(e->name, rel);
+            memcpy(e->hash.hash, entries[i].hash.hash, HASH_SIZE);
+        } else {
+            // directory
+            char dirname[256];
+            int len = slash - rel;
+            strncpy(dirname, rel, len);
+            dirname[len] = '\0';
+
+            // avoid duplicate directories
+            int exists = 0;
+            for (int j = 0; j < tree.count; j++) {
+                if (strcmp(tree.entries[j].name, dirname) == 0) {
+                    exists = 1;
+                    break;
+                }
+            }
+            if (exists) continue;
+
+            // build new prefix
+            char new_prefix[512];
+            if (prefix)
+                snprintf(new_prefix, sizeof(new_prefix), "%s%s/", prefix, dirname);
+            else
+                snprintf(new_prefix, sizeof(new_prefix), "%s/", dirname);
+
+            ObjectID sub_id;
+            if (build_tree(entries, count, new_prefix, &sub_id) != 0)
+                return -1;
+
+            TreeEntry *e = &tree.entries[tree.count++];
+            e->mode = MODE_DIR;
+            strcpy(e->name, dirname);
+            memcpy(e->hash.hash, sub_id.hash, HASH_SIZE);
+        }
+    }
+
+    void *data;
+    size_t len;
+
+    if (tree_serialize(&tree, &data, &len) != 0)
+        return -1;
+
+    if (object_write(OBJ_TREE, data, len, out_id) != 0) {
+        free(data);
+        return -1;
+    }
+
+    free(data);
+    return 0;
+}
 // ─── TODO: Implement these ──────────────────────────────────────────────────
 
 // Build a tree hierarchy from the current index and write all tree
@@ -131,57 +202,35 @@ int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
 // Returns 0 on success, -1 on error.
 int tree_from_index(ObjectID *id_out) {
     Index index;
-if (index_load(&index) != 0) return -1;
-Tree tree;
-tree_init(&tree);
-for (size_t i = 0; i < index.count; i++) {
-    IndexEntry *e = &index.entries[i];
+    if (index_load(&index) != 0) return -1;
 
-    char *slash = strchr(e->path, '/');
+    Tree root;
+    root.count = 0;
 
-    if (!slash) {
-        // Root file
-        tree_add_entry(&tree, e->mode, e->hash, e->path);
-    } else {
-        // Nested path → extract directory name
-        size_t dir_len = slash - e->path;
+    for (int i = 0; i < index.count; i++) {
+        IndexEntry *e = &index.entries[i];
 
-        char dir[256];
-        strncpy(dir, e->path, dir_len);
-        dir[dir_len] = '\0';
+        char *slash = strchr(e->path, '/');
 
-        // Extract filename
-        const char *filename = slash + 1;
-
-        // Create subtree
-        Tree subtree;
-        tree_init(&subtree);
-
-        tree_add_entry(&subtree, e->mode, e->hash, filename);
-
-        // Write subtree
-        ObjectID sub_id;
-        if (tree_write(&subtree, &sub_id) != 0) {
-            tree_free(&subtree);
-            continue;
+        // Root file only
+        if (!slash) {
+            TreeEntry *entry = &root.entries[root.count++];
+            entry->mode = e->mode;
+            entry->hash = e->hash;
+            strcpy(entry->name, e->path);
         }
-
-        tree_free(&subtree);
-
-        // Add subtree to main tree
-        tree_add_entry(&tree, 040000, sub_id, dir);
     }
-}
-ObjectID tree_id;
-if (tree_write(&tree, &tree_id) != 0) {
-    tree_free(&tree);
-    return -1;
-}
-tree_free(&tree);
 
-if (id_out) {
-    *id_out = tree_id;
-}
+    void *data;
+    size_t len;
 
-return 0;
+    if (tree_serialize(&root, &data, &len) != 0) return -1;
+
+    if (object_write(OBJ_TREE, data, len, id_out) != 0) {
+        free(data);
+        return -1;
+    }
+
+    free(data);
+    return 0;
 }
